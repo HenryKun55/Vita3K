@@ -149,8 +149,23 @@ static void log_import_call(char emulation_level, uint32_t nid, SceUID thread_id
     }
 }
 
-// Guest instructions billed per HLE import call in PS Vita speed mode.
-static constexpr uint64_t HLE_CALL_COST = 300;
+// Guest instructions billed per HLE import call in PS Vita speed mode: roughly a user-mode
+// library call on the Vita. Hot trivial calls (TLS lookup, uncontended lightweight mutex)
+// are much cheaper on hardware, and billing them the full cost skews newlib-heavy code.
+static constexpr uint64_t HLE_CALL_COST = 150;
+static constexpr uint64_t HLE_CHEAP_CALL_COST = 30;
+
+static uint64_t hle_call_cost(uint32_t nid) {
+    switch (nid) {
+    case 0xB295EB61: // sceKernelGetTLSAddr
+    case 0x46E7BE7B: // sceKernelLockLwMutex
+    case 0x91FA6614: // sceKernelUnlockLwMutex
+    case 0xA6A2C915: // sceKernelTryLockLwMutex
+        return HLE_CHEAP_CALL_COST;
+    default:
+        return HLE_CALL_COST;
+    }
+}
 
 void call_import(EmuEnvState &emuenv, CPUState &cpu, uint32_t nid, SceUID thread_id) {
     // HLE - call our C++ function
@@ -166,8 +181,8 @@ void call_import(EmuEnvState &emuenv, CPUState &cpu, uint32_t nid, SceUID thread
     const ImportFn *fn = resolve_import(nid);
     if (fn) {
         (*fn)(emuenv, cpu, thread_id);
-        // Syscall/trampoline + typical library body on a real Vita.
-        vita_speed_charge(HLE_CALL_COST);
+        vita_speed_charge(hle_call_cost(nid));
+        vita_speed_profile_hle(thread_id, read_pc(cpu), read_lr(cpu));
     } else {
         const ThreadStatePtr thread = emuenv.kernel.get_thread(thread_id);
         // make the function return 0

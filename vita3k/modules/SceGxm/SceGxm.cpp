@@ -2442,9 +2442,12 @@ static int gxmDrawElementGeneral(EmuEnvState &emuenv, const char *export_name, c
 }
 
 // PS Vita speed mode: extra guest instructions billed for libgxm CPU work beyond the base HLE
-// call cost (draw = state validation + command-buffer writes; patcher = program lookup/patching).
+// call cost. Draw = state validation + command-buffer writes. The shader patcher caches
+// programs by (program, attributes/blend) like the real one: a hit is a hash + lookup, only a
+// miss pays for patching a new program.
 static constexpr uint64_t VITA_GXM_DRAW_COST = 1500;
-static constexpr uint64_t VITA_GXM_PATCHER_COST = 20000;
+static constexpr uint64_t VITA_GXM_PATCHER_HIT_COST = 1000;
+static constexpr uint64_t VITA_GXM_PATCHER_MISS_COST = 30000;
 
 EXPORT(int, sceGxmDraw, SceGxmContext *context, SceGxmPrimitiveType primType, SceGxmIndexFormat indexType, Ptr<const void> indexData, uint32_t indexCount) {
     TRACY_FUNC(sceGxmDraw, context, primType, indexType, indexData, indexCount);
@@ -4553,7 +4556,7 @@ EXPORT(int, sceGxmShaderPatcherCreate, const SceGxmShaderPatcherParams *params, 
 
 EXPORT(int, sceGxmShaderPatcherCreateFragmentProgram, SceGxmShaderPatcher *shaderPatcher, const SceGxmRegisteredProgram *programId, SceGxmOutputRegisterFormat outputFormat, SceGxmMultisampleMode multisampleMode, const SceGxmBlendInfo *blendInfo, Ptr<const SceGxmProgram> vertexProgram, Ptr<SceGxmFragmentProgram> *fragmentProgram) {
     TRACY_FUNC(sceGxmShaderPatcherCreateFragmentProgram, shaderPatcher, programId, outputFormat, multisampleMode, blendInfo, vertexProgram, fragmentProgram);
-    vita_speed_charge(VITA_GXM_PATCHER_COST);
+    vita_speed_charge(VITA_GXM_PATCHER_HIT_COST);
     MemState &mem = emuenv.mem;
 
     if (!shaderPatcher || !programId || !fragmentProgram)
@@ -4578,6 +4581,7 @@ EXPORT(int, sceGxmShaderPatcherCreateFragmentProgram, SceGxmShaderPatcher *shade
         *fragmentProgram = cached->second;
         return 0;
     }
+    vita_speed_charge(VITA_GXM_PATCHER_MISS_COST - VITA_GXM_PATCHER_HIT_COST);
 
     *fragmentProgram = alloc_callbacked<SceGxmFragmentProgram>(emuenv, thread_id, shaderPatcher);
     assert(*fragmentProgram);
@@ -4625,7 +4629,7 @@ EXPORT(int, sceGxmShaderPatcherCreateMaskUpdateFragmentProgram, SceGxmShaderPatc
 
 EXPORT(int, sceGxmShaderPatcherCreateVertexProgram, SceGxmShaderPatcher *shaderPatcher, const SceGxmRegisteredProgram *programId, const SceGxmVertexAttribute *attributes, uint32_t attributeCount, const SceGxmVertexStream *streams, uint32_t streamCount, Ptr<SceGxmVertexProgram> *vertexProgram) {
     TRACY_FUNC(sceGxmShaderPatcherCreateVertexProgram, shaderPatcher, programId, attributes, attributeCount, streams, streamCount, vertexProgram);
-    vita_speed_charge(VITA_GXM_PATCHER_COST);
+    vita_speed_charge(VITA_GXM_PATCHER_HIT_COST);
     MemState &mem = emuenv.mem;
 
     if (!shaderPatcher || !programId || !vertexProgram)
@@ -4650,6 +4654,7 @@ EXPORT(int, sceGxmShaderPatcherCreateVertexProgram, SceGxmShaderPatcher *shaderP
         *vertexProgram = cached->second;
         return 0;
     }
+    vita_speed_charge(VITA_GXM_PATCHER_MISS_COST - VITA_GXM_PATCHER_HIT_COST);
 
     *vertexProgram = alloc_callbacked<SceGxmVertexProgram>(emuenv, thread_id, shaderPatcher);
     assert(*vertexProgram);

@@ -30,7 +30,10 @@
 #include <bit>
 #include <chrono>
 #include <cstdlib>
+#include <fstream>
 #include <memory>
+#include <mutex>
+#include <unordered_map>
 #include <semaphore>
 #include <thread>
 #include <utility>
@@ -160,19 +163,68 @@ static std::counting_semaphore<64> &core_slots() {
 
 // HLE time owed by the guest thread running on this host thread; paid at the next AddTicks.
 static thread_local uint64_t hle_debt = 0;
+// HLE time billed during the current import call (for the profiler).
+static thread_local uint64_t hle_call_cost = 0;
+
+// Guest sampling profiler for speed mode: VITA3K_PROFILE=<file>. Takes one sample every
+// THROTTLE_SLICE guest instructions (the countdown carries across JIT exits, so the PC is
+// wherever the countdown expired, unbiased by SVC exits), and records HLE time separately
+// at the import stub PC with the caller's LR (vita_speed_profile_hle). Rewrites <file>
+// every 5 s as "thread pc lr weight" lines. Symbolize against the app's ELF.
+struct GuestProfiler {
+    std::mutex mutex;
+    std::unordered_map<uint64_t, uint64_t> samples; // key: thread << 32 | pc ; separate LR map
+    std::unordered_map<uint64_t, uint32_t> lr_of;
+    std::chrono::steady_clock::time_point last_dump = std::chrono::steady_clock::now();
+    std::string path;
+
+    void add(uint32_t thread, uint32_t pc, uint32_t lr, uint64_t weight) {
+        const uint64_t key = (uint64_t(thread) << 32) | pc;
+        std::lock_guard lock(mutex);
+        samples[key] += weight;
+        lr_of[key] = lr;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_dump > std::chrono::seconds(5)) {
+            last_dump = now;
+            std::ofstream out(path, std::ios::trunc);
+            for (const auto &[k, w] : samples)
+                out << (k >> 32) << ' ' << std::hex << (k & 0xFFFFFFFF) << ' ' << lr_of[k] << std::dec << ' ' << w << '\n';
+        }
+    }
+};
+
+static GuestProfiler *guest_profiler() {
+    static GuestProfiler *prof = []() -> GuestProfiler * {
+        const char *env = std::getenv("VITA3K_PROFILE");
+        if (!env || !*env)
+            return nullptr;
+        auto *p = new GuestProfiler();
+        p->path = env;
+        LOG_INFO("Guest profiler writing to {}", p->path);
+        return p;
+    }();
+    return prof;
+}
 
 bool vita_speed_enabled() {
     return throttle_ips() > 0;
 }
 
 void vita_speed_charge(uint64_t guest_instructions) {
-    if (vita_speed_enabled())
+    if (vita_speed_enabled()) {
         hle_debt += guest_instructions;
+        hle_call_cost += guest_instructions;
+    }
 }
 
 void vita_speed_charge_bytes(uint64_t bytes, double vita_mb_per_s) {
-    if (vita_speed_enabled())
-        hle_debt += static_cast<uint64_t>(bytes * throttle_ips() / (vita_mb_per_s * 1e6));
+    vita_speed_charge(static_cast<uint64_t>(bytes * throttle_ips() / (vita_mb_per_s * 1e6)));
+}
+
+void vita_speed_profile_hle(uint32_t thread_id, uint32_t pc, uint32_t lr) {
+    const uint64_t cost = std::exchange(hle_call_cost, 0);
+    if (GuestProfiler *prof = guest_profiler(); prof && cost)
+        prof->add(thread_id, pc, lr, cost);
 }
 
 class ArmDynarmicCallback : public Dynarmic::A32::UserCallbacks {
@@ -184,6 +236,8 @@ class ArmDynarmicCallback : public Dynarmic::A32::UserCallbacks {
     using Clock = std::chrono::steady_clock;
     Clock::time_point window_start = Clock::now();
     uint64_t window_ticks = 0;
+    // Instructions left until the next profiler sample; persists across Run() calls.
+    uint64_t slice_left = THROTTLE_SLICE;
 
 public:
     explicit ArmDynarmicCallback(CPUState &parent, DynarmicCPU &cpu)
@@ -386,6 +440,15 @@ public:
             return;
 
         window_ticks += ticks + std::exchange(hle_debt, 0);
+        if (ticks >= slice_left) {
+            slice_left = THROTTLE_SLICE;
+            if (GuestProfiler *prof = guest_profiler()) {
+                const auto &regs = cpu->jit->Regs();
+                prof->add(parent->thread_id, regs[15], regs[14], THROTTLE_SLICE);
+            }
+        } else {
+            slice_left -= ticks;
+        }
         const auto now = Clock::now();
         const auto elapsed = now - window_start;
         const auto expected = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(window_ticks / ips));
@@ -402,7 +465,7 @@ public:
     }
 
     uint64_t GetTicksRemaining() override {
-        return throttle_ips() > 0 ? THROTTLE_SLICE : 1ull << 60;
+        return throttle_ips() > 0 ? slice_left : 1ull << 60;
     }
 };
 

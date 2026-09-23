@@ -34,6 +34,8 @@ bool vita_speed_enabled();
 void vita_speed_charge(uint64_t guest_instructions);
 // Bill a bulk memory operation of `bytes` at the given Vita throughput (MB/s).
 void vita_speed_charge_bytes(uint64_t bytes, double vita_mb_per_s);
+// Profiler: record the HLE time billed during the import call that just returned.
+void vita_speed_profile_hle(uint32_t thread_id, uint32_t pc, uint32_t lr);
 int run(CPUState &state);
 int step(CPUState &state);
 void stop(CPUState &state);
