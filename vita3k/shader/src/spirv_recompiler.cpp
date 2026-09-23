@@ -463,8 +463,12 @@ static void create_fragment_inputs(spv::Builder &b, SpirvShaderParameters &param
 
                 pa_iter_var = b.createBinOp(spv::OpFDiv, v4, pa_iter_var, res_multiplier);
             } else {
-                spv::Decoration precision = get_data_type_size(pa_dtype) < 4 ? spv::DecorationRelaxedPrecision : spv::NoPrecision;
-                pa_iter_var = b.createVariable(precision, spv::StorageClassInput, pa_iter_type, pa_name.c_str());
+                // No RelaxedPrecision on varyings: the vertex side always writes full-precision
+                // float4, and SPIRV-Cross turns a RelaxedPrecision input into half4 for Metal,
+                // which MoltenVK then rejects at pipeline creation ("Fragment input(s)
+                // user(locnN) mismatching vertex shader output type(s)") and Vita3K aborts.
+                // F16 data is still converted after the load (pa_dtype below).
+                pa_iter_var = b.createVariable(spv::NoPrecision, spv::StorageClassInput, pa_iter_type, pa_name.c_str());
                 b.addDecoration(pa_iter_var, spv::DecorationLocation, pa_loc);
 
                 translation_state.interfaces.push_back(pa_iter_var);
