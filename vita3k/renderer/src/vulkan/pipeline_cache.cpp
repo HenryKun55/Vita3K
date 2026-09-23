@@ -919,13 +919,20 @@ vk::Pipeline PipelineCache::compile_pipeline(SceGxmPrimitiveType type, vk::Rende
         .subpass = 0
     };
 
-    const auto result = state.device.createGraphicsPipeline(pipeline_cache, pipeline_info);
-    if (result.result != vk::Result::eSuccess) {
-        LOG_CRITICAL("Failed to create pipeline.");
+    // vulkan-hpp throws on failure (e.g. MoltenVK rejecting a vertex/fragment interface
+    // mismatch). Uncaught, that aborted the whole emulator; log the pair and skip the draw.
+    try {
+        const auto result = state.device.createGraphicsPipeline(pipeline_cache, pipeline_info);
+        if (result.result != vk::Result::eSuccess) {
+            LOG_CRITICAL("Failed to create pipeline.");
+            return nullptr;
+        }
+        return result.value;
+    } catch (const vk::SystemError &e) {
+        LOG_ERROR("Failed to create pipeline (vertex {} / fragment {}): {}",
+            hex_string(vertex_program.hash), hex_string(fragment_program.hash), e.what());
         return nullptr;
     }
-
-    return result.value;
 }
 
 vk::Pipeline PipelineCache::retrieve_pipeline(VKContext &context, SceGxmPrimitiveType &type, bool consider_for_async, MemState &mem) {
