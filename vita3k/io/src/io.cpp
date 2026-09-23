@@ -41,6 +41,26 @@
 #include <iterator>
 #include <string>
 
+#include <chrono>
+#include <cstdlib>
+#include <thread>
+
+// PS Vita speed mode (VITA3K_CPU_MHZ set): model storage speed. Reads block the calling
+// thread like DMA from the memory card / SD2Vita would. VITA3K_IO_MBPS overrides the rate.
+static void vita_io_delay(SceSize bytes) {
+    static const double mbps = [] {
+        const char *cpu = std::getenv("VITA3K_CPU_MHZ");
+        if (!cpu || std::atof(cpu) <= 0)
+            return 0.0;
+        const char *env = std::getenv("VITA3K_IO_MBPS");
+        return env ? std::atof(env) : 25.0;
+    }();
+    if (mbps <= 0)
+        return;
+    constexpr double per_op_latency_s = 150e-6;
+    std::this_thread::sleep_for(std::chrono::duration<double>(per_op_latency_s + bytes / (mbps * 1e6)));
+}
+
 #if defined(__aarch64__) && defined(__APPLE__)
 #define stat64 stat
 #endif
@@ -394,6 +414,7 @@ int read_file(void *data, IOState &io, const SceUID fd, const SceSize size, cons
     const auto file = io.std_files.find(fd);
     if (file != io.std_files.end()) {
         const auto read = file->second.read(data, 1, size);
+        vita_io_delay(static_cast<SceSize>(read));
         LOG_TRACE_IF(log_file_op && log_file_read, "{}: Reading {} bytes of fd {}", export_name, read, log_hex(fd));
         return static_cast<int>(read);
     }

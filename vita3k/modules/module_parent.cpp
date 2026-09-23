@@ -149,6 +149,9 @@ static void log_import_call(char emulation_level, uint32_t nid, SceUID thread_id
     }
 }
 
+// Guest instructions billed per HLE import call in PS Vita speed mode.
+static constexpr uint64_t HLE_CALL_COST = 300;
+
 void call_import(EmuEnvState &emuenv, CPUState &cpu, uint32_t nid, SceUID thread_id) {
     // HLE - call our C++ function
     if (emuenv.kernel.debugger.watch_import_calls) {
@@ -163,6 +166,8 @@ void call_import(EmuEnvState &emuenv, CPUState &cpu, uint32_t nid, SceUID thread
     const ImportFn *fn = resolve_import(nid);
     if (fn) {
         (*fn)(emuenv, cpu, thread_id);
+        // Syscall/trampoline + typical library body on a real Vita.
+        vita_speed_charge(HLE_CALL_COST);
     } else {
         const ThreadStatePtr thread = emuenv.kernel.get_thread(thread_id);
         // make the function return 0

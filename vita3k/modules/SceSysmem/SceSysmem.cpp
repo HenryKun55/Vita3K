@@ -168,9 +168,7 @@ EXPORT(int, sceKernelFreeMemBlockForVM, SceUID uid) {
     return SCE_KERNEL_OK;
 }
 
-EXPORT(int, sceKernelGetFreeMemorySize, SceKernelFreeMemorySizeInfo *info) {
-    TRACY_FUNC(sceKernelGetFreeMemorySize, info);
-
+uint32_t sysmem_max_user(EmuEnvState &emuenv) {
     // Default memory configuration
     uint32_t max_user = MiB(256);
 
@@ -196,9 +194,15 @@ EXPORT(int, sceKernelGetFreeMemorySize, SceKernelFreeMemorySizeInfo *info) {
     } else
         LOG_WARN_ONCE("ATTRIBUTE2 key not found in SFO data.");
 
-    // Define other memory limits
-    constexpr uint32_t max_cdram = MiB(112); // Max cdram memory (112 MiB)
-    constexpr uint32_t max_phycont = MiB(26); // Max physically contiguous memory (26 MiB)
+    return max_user;
+}
+
+EXPORT(int, sceKernelGetFreeMemorySize, SceKernelFreeMemorySizeInfo *info) {
+    TRACY_FUNC(sceKernelGetFreeMemorySize, info);
+
+    const uint32_t max_user = sysmem_max_user(emuenv);
+    constexpr uint32_t max_cdram = SYSMEM_MAX_CDRAM;
+    constexpr uint32_t max_phycont = SYSMEM_MAX_PHYCONT;
     const auto state = emuenv.kernel.obj_store.get<SysmemState>();
     const auto guard = std::lock_guard<std::mutex>(state->mutex);
 

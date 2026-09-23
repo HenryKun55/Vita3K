@@ -19,5 +19,13 @@
 
 #include <module/module.h>
 
+#include <mem/util.h>
+
+constexpr uint32_t SYSMEM_MAX_CDRAM = MiB(112); // Max cdram memory (112 MiB)
+constexpr uint32_t SYSMEM_MAX_PHYCONT = MiB(26); // Max physically contiguous memory (26 MiB)
+
+// User main-memory budget for the running app (256 MiB + SFO memory expansion mode).
+uint32_t sysmem_max_user(EmuEnvState &emuenv);
+
 DECL_EXPORT(SceUID, sceKernelFindMemBlockByAddr, Address addr, uint32_t size);
 DECL_EXPORT(int, sceKernelFreeMemBlock, SceUID uid);

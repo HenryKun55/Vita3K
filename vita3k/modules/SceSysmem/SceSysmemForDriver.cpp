@@ -16,6 +16,9 @@
 // 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 
 #include "SceSysmemForDriver.h"
+#include "SceSysmem.h"
+
+#include <cpu/functions.h>
 #include <modules/sysmem_state.h>
 
 #include <kernel/state.h>
@@ -114,6 +117,29 @@ EXPORT(SceUID, ksceKernelAllocMemBlock, const char *name, SceKernelMemBlockType 
 
     const auto state = emuenv.kernel.obj_store.get<SysmemState>();
     const auto guard = std::lock_guard<std::mutex>(state->mutex);
+
+    // PS Vita speed mode also enforces the real memory budgets, so an app that would run
+    // out of memory on hardware fails the same way here instead of silently succeeding.
+    if (vita_speed_enabled()) {
+        uint64_t used, limit;
+        const char *pool;
+        switch (type) {
+        case SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW:
+            used = state->allocated_cdram, limit = SYSMEM_MAX_CDRAM, pool = "cdram";
+            break;
+        case SCE_KERNEL_MEMBLOCK_TYPE_USER_MAIN_PHYCONT_RW:
+        case SCE_KERNEL_MEMBLOCK_TYPE_USER_MAIN_PHYCONT_NC_RW:
+            used = state->allocated_phycont, limit = SYSMEM_MAX_PHYCONT, pool = "phycont";
+            break;
+        default:
+            used = state->allocated_user, limit = sysmem_max_user(emuenv), pool = "user";
+            break;
+        }
+        if (used + size > limit) {
+            LOG_ERROR("Vita memory budget exceeded: {} block '{}' of {} KiB ({} KiB of {} KiB in use)", pool, name, size / 1024, used / 1024, limit / 1024);
+            return RET_ERROR(SCE_KERNEL_ERROR_NO_MEMORY);
+        }
+    }
 
     Ptr<void> address;
     if (base_address) {

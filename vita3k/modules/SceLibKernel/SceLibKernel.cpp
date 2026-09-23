@@ -154,9 +154,14 @@ EXPORT(int, sceClibMemcmpConstTime) {
     return UNIMPLEMENTED();
 }
 
+// Approximate PS Vita bulk-memory throughput (Cortex-A9 NEON over LPDDR2), for speed mode.
+static constexpr double VITA_MEMCPY_MBPS = 400.0;
+static constexpr double VITA_MEMSET_MBPS = 800.0;
+
 EXPORT(Ptr<void>, sceClibMemcpy, Ptr<void> dst, const void *src, SceSize len) {
     TRACY_FUNC(sceClibMemcpy, dst, src, len);
     memcpy(dst.get(emuenv.mem), src, len);
+    vita_speed_charge_bytes(len, VITA_MEMCPY_MBPS);
     return dst;
 }
 
@@ -195,6 +200,7 @@ EXPORT(Ptr<void>, sceClibMemcpy_safe, Ptr<void> dst, const Ptr<void> src, SceSiz
 EXPORT(Ptr<void>, sceClibMemmove, Ptr<void> dst, const void *src, SceSize len) {
     TRACY_FUNC(sceClibMemmove, dst, src, len);
     memmove(dst.get(emuenv.mem), src, len);
+    vita_speed_charge_bytes(len, VITA_MEMCPY_MBPS);
     return dst;
 }
 
@@ -206,6 +212,7 @@ EXPORT(int, sceClibMemmoveChk) {
 EXPORT(Ptr<void>, sceClibMemset, Ptr<void> dst, int ch, SceSize len) {
     TRACY_FUNC(sceClibMemset, dst, ch, len);
     memset(dst.get(emuenv.mem), ch, len);
+    vita_speed_charge_bytes(len, VITA_MEMSET_MBPS);
     return dst;
 }
 

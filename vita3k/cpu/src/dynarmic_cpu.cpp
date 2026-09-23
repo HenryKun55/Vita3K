@@ -26,11 +26,14 @@
 #include <dynarmic/interface/A32/coprocessor.h>
 #include <dynarmic/interface/exclusive_monitor.h>
 
+#include <algorithm>
 #include <bit>
 #include <chrono>
 #include <cstdlib>
 #include <memory>
+#include <semaphore>
 #include <thread>
+#include <utility>
 #include <optional>
 #include <string>
 
@@ -125,9 +128,12 @@ public:
     }
 };
 
-// Optional CPU throttle to approximate real PS Vita speed. Set VITA3K_CPU_MHZ to the
-// effective guest instruction rate in millions/sec (e.g. 444 = stock Cortex-A9 at IPC 1).
-// Real A9 IPC is below 1, so calibrate against on-device frame times. 0/unset = off.
+// PS Vita speed emulation. Set VITA3K_CPU_MHZ to the effective guest instruction rate in
+// millions/sec per core (444 = Cortex-A9 overclocked at IPC 1; real IPC is lower). When set:
+//  - each guest thread is slowed to that instruction rate,
+//  - HLE work (native host code) is billed back as guest time via vita_speed_charge*,
+//  - at most VITA3K_CORES (default 3, the cores a Vita app gets) guest threads run at once.
+// 0/unset = off, no behaviour change.
 static double throttle_ips() {
     static const double ips = [] {
         const char *env = std::getenv("VITA3K_CPU_MHZ");
@@ -141,6 +147,33 @@ static double throttle_ips() {
 
 // Guest instructions per JIT slice before control returns to AddTicks.
 static constexpr uint64_t THROTTLE_SLICE = 20000;
+
+static std::counting_semaphore<64> &core_slots() {
+    static std::counting_semaphore<64> slots([] {
+        const char *env = std::getenv("VITA3K_CORES");
+        const int n = std::clamp(env ? std::atoi(env) : 3, 1, 64);
+        LOG_INFO("Guest core limit: {}", n);
+        return n;
+    }());
+    return slots;
+}
+
+// HLE time owed by the guest thread running on this host thread; paid at the next AddTicks.
+static thread_local uint64_t hle_debt = 0;
+
+bool vita_speed_enabled() {
+    return throttle_ips() > 0;
+}
+
+void vita_speed_charge(uint64_t guest_instructions) {
+    if (vita_speed_enabled())
+        hle_debt += guest_instructions;
+}
+
+void vita_speed_charge_bytes(uint64_t bytes, double vita_mb_per_s) {
+    if (vita_speed_enabled())
+        hle_debt += static_cast<uint64_t>(bytes * throttle_ips() / (vita_mb_per_s * 1e6));
+}
 
 class ArmDynarmicCallback : public Dynarmic::A32::UserCallbacks {
     friend class DynarmicCPU;
@@ -352,7 +385,7 @@ public:
         if (ips <= 0)
             return;
 
-        window_ticks += ticks;
+        window_ticks += ticks + std::exchange(hle_debt, 0);
         const auto now = Clock::now();
         const auto elapsed = now - window_start;
         const auto expected = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(window_ticks / ips));
@@ -411,9 +444,14 @@ int DynarmicCPU::run() {
     break_ = false;
     parent->svc_called = false;
     Dynarmic::HaltReason halt_reason;
+    const bool limit_cores = throttle_ips() > 0;
+    if (limit_cores)
+        core_slots().acquire();
     do {
         halt_reason = jit->Run();
     } while ((halt_reason == Dynarmic::HaltReason::Step) || (halt_reason == Dynarmic::HaltReason::CacheInvalidation));
+    if (limit_cores)
+        core_slots().release();
 
     return halted;
 }

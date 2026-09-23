@@ -27,6 +27,13 @@
 struct MemState;
 
 CPUStatePtr init_cpu(bool cpu_opt, SceUID thread_id, std::size_t processor_id, MemState &mem);
+
+// PS Vita speed emulation, enabled by the VITA3K_CPU_MHZ env var (see dynarmic_cpu.cpp).
+bool vita_speed_enabled();
+// Bill guest-instruction time for work done natively on the host (HLE) by the calling guest thread.
+void vita_speed_charge(uint64_t guest_instructions);
+// Bill a bulk memory operation of `bytes` at the given Vita throughput (MB/s).
+void vita_speed_charge_bytes(uint64_t bytes, double vita_mb_per_s);
 int run(CPUState &state);
 int step(CPUState &state);
 void stop(CPUState &state);
