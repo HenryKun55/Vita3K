@@ -27,7 +27,10 @@
 #include <dynarmic/interface/exclusive_monitor.h>
 
 #include <bit>
+#include <chrono>
+#include <cstdlib>
 #include <memory>
+#include <thread>
 #include <optional>
 #include <string>
 
@@ -122,11 +125,32 @@ public:
     }
 };
 
+// Optional CPU throttle to approximate real PS Vita speed. Set VITA3K_CPU_MHZ to the
+// effective guest instruction rate in millions/sec (e.g. 444 = stock Cortex-A9 at IPC 1).
+// Real A9 IPC is below 1, so calibrate against on-device frame times. 0/unset = off.
+static double throttle_ips() {
+    static const double ips = [] {
+        const char *env = std::getenv("VITA3K_CPU_MHZ");
+        const double mhz = env ? std::atof(env) : 0.0;
+        if (mhz > 0)
+            LOG_INFO("CPU throttle enabled: {} M guest instructions/s per thread", mhz);
+        return mhz > 0 ? mhz * 1e6 : 0.0;
+    }();
+    return ips;
+}
+
+// Guest instructions per JIT slice before control returns to AddTicks.
+static constexpr uint64_t THROTTLE_SLICE = 20000;
+
 class ArmDynarmicCallback : public Dynarmic::A32::UserCallbacks {
     friend class DynarmicCPU;
 
     CPUState *parent;
     DynarmicCPU *cpu;
+
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point window_start = Clock::now();
+    uint64_t window_ticks = 0;
 
 public:
     explicit ArmDynarmicCallback(CPUState &parent, DynarmicCPU &cpu)
@@ -323,10 +347,29 @@ public:
         cpu->jit->HaltExecution(Dynarmic::HaltReason::UserDefined8);
     }
 
-    void AddTicks(uint64_t ticks) override {}
+    void AddTicks(uint64_t ticks) override {
+        const double ips = throttle_ips();
+        if (ips <= 0)
+            return;
+
+        window_ticks += ticks;
+        const auto now = Clock::now();
+        const auto elapsed = now - window_start;
+        const auto expected = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(window_ticks / ips));
+
+        if (expected > elapsed) {
+            // Ran faster than a Vita would: pay the difference once it is worth a sleep.
+            if (expected - elapsed >= std::chrono::milliseconds(1))
+                std::this_thread::sleep_until(window_start + expected);
+        } else if (elapsed - expected > std::chrono::milliseconds(2)) {
+            // Thread was blocked/idle (or host was slower): don't bank credit for a burst later.
+            window_start = now;
+            window_ticks = 0;
+        }
+    }
 
     uint64_t GetTicksRemaining() override {
-        return 1ull << 60;
+        return throttle_ips() > 0 ? THROTTLE_SLICE : 1ull << 60;
     }
 };
 
@@ -347,7 +390,7 @@ std::unique_ptr<Dynarmic::A32::Jit> DynarmicCPU::make_jit() {
     config.coprocessors[15] = cp15;
     config.processor_id = core_id;
     config.optimizations = cpu_opt ? Dynarmic::all_safe_optimizations : Dynarmic::no_optimizations;
-    config.enable_cycle_counting = false;
+    config.enable_cycle_counting = throttle_ips() > 0;
 
     return std::make_unique<Dynarmic::A32::Jit>(config);
 }
