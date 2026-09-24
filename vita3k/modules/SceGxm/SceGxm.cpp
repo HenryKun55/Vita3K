@@ -3959,8 +3959,11 @@ EXPORT(int, sceGxmSetFragmentDefaultUniformBuffer, SceGxmContext *context, Ptr<c
 
 EXPORT(void, sceGxmSetFragmentProgram, SceGxmContext *context, Ptr<const SceGxmFragmentProgram> fragmentProgram) {
     TRACY_FUNC(sceGxmSetFragmentProgram, context, fragmentProgram);
-    if (!context || !fragmentProgram)
+    if (!context || !fragmentProgram) {
+        // Ignored, so the previously bound fragment program stays active for the next draw.
+        LOG_WARN("sceGxmSetFragmentProgram called with a null program (ignored, previous stays bound)");
         return;
+    }
 
     context->state.fragment_program = fragmentProgram;
     renderer::set_program(*emuenv.renderer, context->renderer.get(), fragmentProgram, true);
@@ -4343,8 +4346,10 @@ EXPORT(int, sceGxmSetVertexDefaultUniformBuffer, SceGxmContext *context, Ptr<con
 
 EXPORT(void, sceGxmSetVertexProgram, SceGxmContext *context, Ptr<const SceGxmVertexProgram> vertexProgram) {
     TRACY_FUNC(sceGxmSetVertexProgram, context, vertexProgram);
-    if (!context || !vertexProgram)
+    if (!context || !vertexProgram) {
+        LOG_WARN("sceGxmSetVertexProgram called with a null program (ignored, previous stays bound)");
         return;
+    }
 
     context->state.vertex_program = vertexProgram;
     renderer::set_program(*emuenv.renderer, context->renderer.get(), vertexProgram, false);

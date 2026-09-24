@@ -270,11 +270,28 @@ public:
         }
     }
 
+    // Log guest thread id + words on the stack that look like return addresses into the
+    // main executable, so a crash can be walked back to its caller with addr2line.
+    void LogStackReturnAddresses() {
+        const uint32_t sp = this->cpu->get_sp();
+        std::string out;
+        for (uint32_t off = 0; off < 32768; off += 4) {
+            Ptr<uint32_t> w{ sp + off };
+            if (!w.valid(*parent->mem))
+                break;
+            const uint32_t v = *w.get(*parent->mem);
+            if ((v & 1) && v >= 0x81000000 && v < 0x81800000)
+                out += fmt::format(" {:x}", v - 1);
+        }
+        LOG_ERROR("Guest thread {} stack return candidates:{}", parent->thread_id, out);
+    }
+
     template <typename T>
     T MemoryRead(Dynarmic::A32::VAddr addr) {
         Ptr<T> ptr{ addr };
         if (!ptr || !ptr.valid(*parent->mem) || ptr.address() < parent->mem->host_page_size) {
             LOG_ERROR("Invalid read of uint{}_t at address: 0x{:x}\n{}", sizeof(T) * 8, addr, this->cpu->save_context().description());
+            LogStackReturnAddresses();
 
             auto pc = this->cpu->get_pc();
             if (pc < parent->mem->host_page_size)
@@ -312,6 +329,7 @@ public:
         Ptr<T> ptr{ addr };
         if (!ptr || !ptr.valid(*parent->mem) || ptr.address() < parent->mem->host_page_size) {
             LOG_ERROR("Invalid write of uint{}_t at addr: 0x{:x}, val = 0x{:x}\n{}", sizeof(T) * 8, addr, value, this->cpu->save_context().description());
+            LogStackReturnAddresses();
 
             auto pc = this->cpu->get_pc();
             if (pc < parent->mem->host_page_size)
